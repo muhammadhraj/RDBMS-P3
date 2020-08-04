@@ -1,0 +1,416 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlenv.h>
+
+const char DB_NAME_KEY[16] = "db2.name";
+const char DB_USER_KEY[16] = "db2.username";
+const char DB_PASS_KEY[16] = "db2.password";
+const char BATCH_KEY[16] = "p3.batch.input";
+
+struct sqlca sqlca;
+
+EXEC SQL BEGIN DECLARE SECTION;
+  char db_name[20];
+  char db_user[20];
+  char db_pass[20];
+
+  int cus_id;
+  char cus_name[15];
+  char cus_gender;
+  int cus_age;
+  int cus_pin;
+  int acc_num;
+  int acc_id;
+  int acc_bal;
+  char acc_type;
+  char acc_status; 
+
+  int src_cid;
+  int dest_cid;
+  int trans_amt;
+  int a_total;
+  int b_min;
+  int b_max;
+  int b_avg;
+EXEC SQL END DECLARE SECTION;
+
+
+/**
+ * Create a new customer.
+ * @param name customer name
+ * @param gender customer gender
+ * @param age customer age
+ * @param pin customer pin
+ */
+static void newCustomer(char* name, char* gender, char* age, char* pin)
+{
+  strcpy(cus_name, name);
+  cus_gender = *gender;
+  cus_age = atoi(age);
+  cus_pin = atoi(pin);
+  if(cus_age>0 & cus_pin>0){
+    EXEC SQL INSERT INTO p3.customer(name, gender, age, pin) VALUES(:cus_name, :cus_gender, :cus_age, :cus_pin);
+    printf(":: CREATE NEW CUSTOMER - SUCCESS\n");
+  }
+  else{
+    printf(":: CREATE NEW CUSTOMER - FAIL\n");
+  }
+}
+
+
+/**
+ * Open a new account.
+ * @param id customer id
+ * @param type type of account
+ * @param amount initial deposit amount
+ */
+static void openAccount(char* id, char* type, char* amount)
+{
+  cus_id = atoi(id);
+  acc_type = *type;
+  acc_bal = atoi(amount);
+  if(acc_bal>=0){
+    EXEC SQL INSERT INTO p3.account(id, balance, type, status) VALUES(:cus_id, :acc_bal, :acc_type, 'A');
+    printf(":: OPEN ACCOUNT - SUCCESS\n");
+  }
+  else{
+    printf(":: OPEN ACCOUNT - FAIL\n");
+  }
+}
+
+/**
+ * Close an account.
+ * @param accNum account number
+ */
+static void closeAccount(char* accNum)
+{
+  acc_num = atoi(accNum);
+  EXEC SQL UPDATE p3.account SET status='I' WHERE number=:acc_num;
+  printf(":: CLOSE ACCOUNT - SUCCESS\n");
+}
+
+/**
+ * Deposit into an account.
+ * @param accNum account number
+ * @param amount deposit amount
+ */
+static void deposit(char* accNum, char* amount)
+{
+  acc_num = atoi(accNum);
+  trans_amt = atoi(amount);
+  if(trans_amt>=0){
+    EXEC SQL UPDATE p3.account SET balance=balance+:trans_amt WHERE number=:acc_num AND status='A';
+    printf(":: DEPOSIT - SUCCESS\n");
+  }
+  else{
+    printf(":: DEPOSIT - FAIL\n");
+  }
+}
+
+/**
+ * Withdraw from an account.
+ * @param accNum account number
+ * @param amount withdraw amount
+ */
+static void withdraw(char* accNum, char* amount)
+{
+  acc_num = atoi(accNum);
+  trans_amt = atoi(amount);
+  if(trans_amt>=0){
+    EXEC SQL UPDATE p3.account SET balance=balance-:trans_amt WHERE number=:acc_num AND status='A';
+    printf(":: WITHDRAW - SUCCESS\n");
+  }
+  else{
+    printf(":: WITHDRAW - FAIL\n");
+  }
+}
+
+/**
+ * Transfer amount from source account to destination account. 
+ * @param srcAccNum source account number
+ * @param destAccNum destination account number
+ * @param amount transfer amount
+ */
+static void transfer(char* srcAccNum, char* destAccNum, char* amount)
+{
+  src_cid = atoi(srcAccNum);
+  dest_cid = atoi(destAccNum);
+  trans_amt = atoi(amount);
+  if(trans_amt>=0){
+    EXEC SQL UPDATE p3.account SET balance=balance-:trans_amt WHERE number=:src_cid AND status='A';
+    EXEC SQL UPDATE p3.account SET balance=balance+:trans_amt WHERE number=:dest_cid AND status='A';
+    printf(":: TRANSFER - SUCCESS\n");
+  }
+  else{
+    printf(":: TRANSFER - FAIL\n");
+  }
+}
+
+/**
+ * Display account summary.
+ * @param cusID customer ID
+ */
+static void accountSummary(char* cusID)
+{
+  cus_id = atoi(cusID);
+  EXEC SQL DECLARE c1 CURSOR FOR SELECT number, id, balance, type, status FROM p3.account WHERE id=:cus_id;
+  EXEC SQL OPEN c1;
+  EXEC SQL FETCH c1 INTO :acc_num, :acc_id, :acc_bal, :acc_type, :acc_status;
+  EXEC SQL CLOSE c1;
+  printf(":: ACCOUNT SUMMARY - SUCCESS\n");
+}
+
+/**
+ * Display Report A - Customer Information with Total Balance in Decreasing Order.
+ */
+static void reportA()
+{
+  EXEC SQL DECLARE c2 CURSOR FOR SELECT p3.total_balance.id, name, total FROM p3.customer JOIN p3.total_balance ON p3.customer.id=p3.total_balance.id ORDER BY total DESC;
+  EXEC SQL OPEN c2;
+  EXEC SQL FETCH c2 INTO :cus_id, :cus_name, :a_total;
+  EXEC SQL CLOSE c2;
+  printf(":: REPORT A - SUCCESS\n");
+}
+/**
+ * Display Report B - Customer Information with Total Balance in Decreasing Order.
+ * @param min minimum age
+ * @param max maximum age
+ */
+static void reportB(char* min, char* max)
+{
+  b_min = atoi(min);
+  b_max = atoi(max);
+  EXEC SQL DECLARE c3 CURSOR FOR SELECT p3.customer.id, name, total FROM p3.customer JOIN p3.total_balance ON p3.customer.id=p3.total_balance.id WHERE age BETWEEN :b_min AND :b_max ORDER BY total DESC;
+  EXEC SQL OPEN c3;
+  EXEC SQL FETCH c3 INTO :cus_id, :cus_name, :b_avg;
+  EXEC SQL CLOSE c3;
+  printf(":: REPORT B - SUCCESS\n");
+}
+
+/**
+ * Retrieve database connection info from properties file.
+ * @param filename name of properties file
+ */
+static void init(char filename[])
+{
+  // open file
+  FILE *fp = fopen(filename, "r");
+  // print error if file cannot be opened
+  if (fp == NULL)
+  {
+    printf("Cannot open properties file %s\n", filename);
+  }
+  else
+  {
+    char *cur_line = (char *) malloc(256);
+    // read each line
+    while ( fscanf(fp, "%s", cur_line) != EOF)
+    {
+      char *line_copy = (char *) malloc(256);
+      char *token;
+      // copy current line
+      strcpy(line_copy, cur_line);
+      // tokenize line and save connection values
+      while ( (token = strsep(&line_copy, "=")) != NULL )
+      {
+        if ( strcmp(token, DB_NAME_KEY) == 0)
+        {
+          token = strsep(&line_copy, "=");
+          strcpy(db_name, token);
+        }
+        else if ( strcmp(token, DB_USER_KEY) == 0)
+        {
+          token = strsep(&line_copy, "=");
+          strcpy(db_user, token);
+        }
+        else if ( strcmp(token, DB_PASS_KEY) == 0)
+        {
+          token = strsep(&line_copy, "=");
+          strcpy(db_pass, token);
+        }
+        else
+        {
+          return;
+        }
+      }
+    }
+  }
+  // close file
+  fclose(fp);
+}
+
+
+/**
+ * Open database connection.
+ */
+static void open_db()
+{
+  EXEC SQL CONNECT TO :db_name USER :db_user USING :db_pass;
+}
+
+/**
+ * Close database connection.
+ */
+static void close_db()
+{
+  EXEC SQL CONNECT RESET;
+}
+
+/**
+ * Test database connection.
+ */
+static void test_connection()
+{
+  printf(":: TEST - CONNECTING TO DATABASE\n");
+  open_db();
+  // check returned sqlcode
+  if (sqlca.sqlcode == 0)
+  {
+    printf(":: TEST - SUCCESSFULLY CONNECTED TO DATABASE\n");
+    close_db();
+    printf(":: TEST - DISCONNECTED FROM DATABASE\n");
+  }
+  else
+  {
+    printf(":: TEST - FAILED CONNECTED TO DATABASE\n");
+    printf(":::: ERROR SQLCODE %i\n", sqlca.sqlcode);
+  }  
+}
+
+/**
+ * Execute function from batch input.
+ * @param arr array of strings
+ * @param size length of p array
+ */
+void batch_execute(char** arr, int size)
+{
+  if (size < 0)
+  {
+    printf("Invalid parameter count");
+  }
+  else
+  {
+    printf("\n");    
+    if (strcmp(arr[0], "#newCustomer") == 0)
+    {
+      newCustomer(arr[1], arr[2], arr[3], arr[4]);
+    }
+    else if (strcmp(arr[0], "#openAccount") == 0)
+    {
+      openAccount(arr[1], arr[2], arr[3]);
+    }
+    else if (strcmp(arr[0], "#closeAccount") == 0)
+    {
+      closeAccount(arr[1]);
+    }
+    else if (strcmp(arr[0], "#deposit") == 0)
+    {
+      deposit(arr[1], arr[2]);
+    }
+    else if (strcmp(arr[0], "#withdraw") == 0)
+    {
+      withdraw(arr[1], arr[2]);
+    }
+    else if (strcmp(arr[0], "#transfer") == 0)
+    {
+      transfer(arr[1], arr[2], arr[3]);
+    }
+    else if (strcmp(arr[0], "#accountSummary") == 0)
+    {
+      accountSummary(arr[1]);
+    }
+    else if (strcmp(arr[0], "#reportA") == 0)
+    {
+      reportA();
+    }
+    else if (strcmp(arr[0], "#reportB") == 0)
+    {
+      reportB(arr[1], arr[2]);
+    }
+    else
+    {
+      printf("Could not find function to batch_execute: %s", arr[0]);
+    }
+    printf("\n");
+  }
+}
+
+/**
+ * Run batch input given filename.
+ * @param filename name of properties file
+ */
+static void batch_run(char filename[])
+{
+  // open file
+  FILE *fp = fopen(filename, "r");
+  // print error if file cannot be opened
+  if (fp == NULL)
+  {
+    printf("Cannot open properties file %s\n", filename);
+  }
+  else
+  {
+    int batch_mode = 0;
+    char *cur_line = (char *) malloc(256);
+    // read each line
+    while ( fscanf(fp, "%s", cur_line) != EOF)
+    {
+      char *line_copy = (char *) malloc(256);
+      char *token;
+      // copy current line
+      strcpy(line_copy, cur_line);
+      if (batch_mode == 0)
+      {
+        // tokenize line and find batch key
+        while ( (token = strsep(&line_copy, "=")) != NULL )
+        {
+          if ( strcmp(token, BATCH_KEY) == 0)
+          {
+            batch_mode = 1;
+          }
+          else
+          {
+            break;
+          }
+        }
+      }
+      else if (batch_mode == 1)
+      {
+        char *token;
+        char **token_arr = (char **) malloc(sizeof(char*) * 1);
+        int token_cnt = 0;
+        // get each token and save to array
+        while ( (token = strsep(&line_copy, ",")) != NULL )
+        {
+          token_arr = (char **) realloc(token_arr, (token_cnt + 1) * sizeof(char*));
+          token_arr[token_cnt] = (char *) malloc( strlen(token) + 1 );
+          strcpy(token_arr[token_cnt], token);
+          token_cnt++;
+        }
+        // run function
+        batch_execute(token_arr, token_cnt);
+      }
+    }
+  }
+  // close file
+  fclose(fp);
+}
+
+int main(int argc, char *argv[])
+{
+  if (argc < 2)
+  {
+    printf("Need properties file\n");
+  }
+  else
+  {
+    init(argv[1]);
+    test_connection();
+
+    open_db();
+    batch_run(argv[1]);
+    close_db();
+  }
+  return 0;
+}
